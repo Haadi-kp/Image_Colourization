@@ -14,11 +14,11 @@ from datetime import timedelta
 from flask import session
 from flask_mail import Mail, Message
 from werkzeug.utils import secure_filename
-
-# file import MainModel,Unet,UnetBlock  # Adjust the import path to your actual `file.py`
-from file import *  # Import all classes and functions from file.py
 from flask import jsonify
 
+# file import MainModel,Unet,UnetBlock  # Adjust the import path to your actual `file.py`
+from file import *  # defines main model architecture
+from file2 import *  # defines second model architecture
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -37,8 +37,6 @@ os.makedirs(RESULT_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['RESULT_FOLDER'] = RESULT_FOLDER
 
-
-
 # Database connection setup
 db = pymysql.connect(
     host="localhost",
@@ -46,11 +44,6 @@ db = pymysql.connect(
     password="",
     database="image_colorization"
 )
-
-# Initialize Flask app, __name__ is passed to tell Flask the location of the app
-# app = Flask(__name__)
-# app.secret_key = os.urandom(24)  #secret key for the Flask app to secure session data.
-
 
 # Helper function to execute queries
 def execute_query(query_type, query, params=None):
@@ -73,15 +66,12 @@ def execute_query(query_type, query, params=None):
         cursor.close()
         print(f"Database error: {e}")
         flash("An error occurred while processing your request.")
-        # Handle or log the error as needed
         return None
     except Exception as e:
         cursor.close()
         print(f"Unexpected error: {e}")
         flash("An unexpected error occurred.")
-        # Handle or log the error as needed
         return None
-
 
 @app.route('/')
 def login():
@@ -92,7 +82,6 @@ def login():
         return redirect('/home')
     else:
         return render_template("login.html")
-
 
 @app.route('/login_validation', methods=['POST', 'GET'])
 def login_validation():
@@ -118,9 +107,7 @@ def login_validation():
         flash("Already a user is logged-in!")
         return redirect('/home')
 
-
 # Flask-Mail configuration
-
 app.config['SECRET_KEY'] = 'qwertyuiop'
 app.config['MAIL_SERVER'] = 'smtp.googlemail.com'
 app.config['MAIL_PORT'] = 587
@@ -129,7 +116,6 @@ app.config['MAIL_USERNAME'] = 'kpgadgetsarena@gmail.com'
 app.config['MAIL_PASSWORD'] = 'voxo isgt wxoi sqeb'
 app.config['MAIL_DEBUG'] = True
 mail = Mail(app)
-
 
 # 🔹 Step 1: Request Password Reset (Checks if email exists)
 @app.route('/reset', methods=['GET', 'POST'])
@@ -172,7 +158,6 @@ def reset():
     flash("An OTP has been sent to your email.","success")
     return redirect('/verify_otp')  # Move to OTP verification step
 
-
 # 🔹 Step 2: OTP Verification (Checks if OTP is correct)
 @app.route('/verify_otp', methods=['GET', 'POST'])
 def verify_otp():
@@ -201,6 +186,7 @@ def verify_otp():
     else:
         flash("Invalid OTP! Please enter the correct OTP.","error")
         return redirect('/verify_otp')  # Stay on OTP page
+
 # 🔹 Step 3: Set New Password (Ensures OTP was verified)
 @app.route('/set_new_password', methods=['GET', 'POST'])
 def set_new_password():
@@ -273,13 +259,6 @@ def resend_otp():
     flash("A new OTP has been sent to your email.")
     return redirect('/verify_otp')
 
-
-
-
-
-
-
-
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if 'user_id' in session:
@@ -287,7 +266,6 @@ def register():
         return redirect('/')
     else:
         return render_template("register.html")
-
 
 @app.route('/registration', methods=['GET', 'POST'])
 def registration():
@@ -337,17 +315,25 @@ def registration():
         return redirect('/')
 
 
-# Load the pretrained GAN models
+# Load pretrained models
 model_path1 = os.path.join(MODEL_FOLDER, "Main_Model.pth")
-# model_path2 = os.path.join(MODEL_FOLDER, "Second_Model.pth")
+model_path2 = os.path.join(MODEL_FOLDER, "Second_Model.pth")  # Path to DeOldify model
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Load both models
-net_G = torch.load(model_path1, map_location=device)
-net_G.eval()  # Set first model to evaluation mode
+# Load Model 1 (MainModel)
+# Note: Using weights_only=False because we're loading the full MainModel object
+net_G1 = torch.load(model_path1, map_location=device, weights_only=False)
+net_G1.eval()  # Set first model to evaluation mode # Set first model to evaluation mode
 
-# net_G2 = torch.load(model_path2, map_location=device)
-# net_G2.eval()  # Set second model to evaluation mode
+# Load Model 2 (DeOldifyGenerator)
+net_G2 = DeOldifyGenerator(input_nc=1, output_nc=2, n_filters=64, n_blocks=6)
+state_dict2 = torch.load(model_path2, map_location=device, weights_only=True)
+# Extract only the generator weights and adjust keys
+generator_state_dict = {k.replace('net_G.', ''): v for k, v in state_dict2.items() if k.startswith('net_G.')}
+net_G2.load_state_dict(generator_state_dict, strict=True)
+net_G2.eval()
+
+
 
 # Define transforms (if needed elsewhere)
 transform = transforms.Compose([
@@ -357,7 +343,6 @@ transform = transforms.Compose([
 
 
 # Preprocessing function
-
 def preprocess_image(image_path, size=256):
     """
     Preprocess a grayscale image for the model.
@@ -393,6 +378,77 @@ def colorize_image(net_G, L_tensor):
     return rgb_image
 
 
+# Preprocessing function for Model 1 (MainModel)
+def preprocess_image_model1(image_path, size=256):
+    """
+    Preprocess a grayscale image for MainModel.
+    Returns a tensor for the L channel and the resized image.
+    """
+    img = Image.open(image_path).convert("RGB")  # Ensure RGB format
+    transforms_pipeline = transforms.Compose([
+        transforms.Resize((size, size), Image.BICUBIC)
+    ])
+    img_resized = transforms_pipeline(img)
+    img_array = np.array(img_resized)
+    img_lab = rgb2lab(img_array).astype("float32")
+    L = img_lab[:, :, 0] / 50.0 - 1.0  # Normalize L to [-1,1]
+    L_tensor = torch.tensor(L).unsqueeze(0).unsqueeze(0)  # Shape: (1,1,H,W)
+    return L_tensor.to(device), img_resized
+
+# Preprocessing function for Model 2 (DeOldifyGenerator)
+def preprocess_image_model2(image_path, size=256):
+    """
+    Preprocess a grayscale image for DeOldifyGenerator.
+    Returns a tensor for the L channel and the resized image.
+    Adjusted for DeOldify compatibility if needed.
+    """
+    img = Image.open(image_path).convert("RGB")  # Ensure RGB format
+    transforms_pipeline = transforms.Compose([
+        transforms.Resize((size, size), Image.BICUBIC)
+    ])
+    img_resized = transforms_pipeline(img)
+    img_array = np.array(img_resized)
+    img_lab = rgb2lab(img_array).astype("float32")
+    L = img_lab[:, :, 0] / 50.0 - 1.0  # Normalize L to [-1,1], consistent with DeOldify training
+    L_tensor = torch.tensor(L).unsqueeze(0).unsqueeze(0)  # Shape: (1,1,H,W)
+    return L_tensor.to(device), img_resized
+
+# Colorization function for Model 1 (MainModel)
+def colorize_image_model1(model, L_tensor):
+    """
+    Colorizes a grayscale image using MainModel.
+    Returns the final colorized image in RGB format.
+    """
+    with torch.no_grad():
+        ab_pred = model.net_G(L_tensor)  # MainModel has net_G attribute
+    L = (L_tensor.squeeze().cpu().numpy() + 1.0) * 50.0  # Denormalize L
+    ab = ab_pred.squeeze().cpu().numpy() * 110.0  # Denormalize ab
+    ab = np.moveaxis(ab, 0, -1)  # Shape: (H, W, 2)
+    lab_combined = np.zeros((L.shape[0], L.shape[1], 3))
+    lab_combined[:, :, 0] = L
+    lab_combined[:, :, 1:] = ab
+    rgb_image = lab2rgb(lab_combined)
+    return rgb_image
+
+# Colorization function for Model 2 (DeOldifyGenerator)
+def colorize_image_model2(model, L_tensor):
+    """
+    Colorizes a grayscale image using DeOldifyGenerator.
+    Returns the final colorized image in RGB format.
+    Adjusted for DeOldify output (Tanh activation).
+    """
+    with torch.no_grad():
+        ab_pred = model(L_tensor)  # DeOldifyGenerator is called directly
+    L = (L_tensor.squeeze().cpu().numpy() + 1.0) * 50.0  # Denormalize L
+    ab = ab_pred.squeeze().cpu().numpy() * 110.0  # Denormalize ab (assuming Tanh output scaled to [-1, 1])
+    ab = np.moveaxis(ab, 0, -1)  # Shape: (H, W, 2)
+    lab_combined = np.zeros((L.shape[0], L.shape[1], 3))
+    lab_combined[:, :, 0] = L
+    lab_combined[:, :, 1:] = ab
+    rgb_image = lab2rgb(lab_combined)
+    return rgb_image
+
+
 @app.route('/colorize', methods=['POST'])
 def colorize_endpoint():
     """
@@ -411,7 +467,7 @@ def colorize_endpoint():
 
     try:
         L_tensor, original_image = preprocess_image(filepath)
-        colorized_image = colorize_image(net_G, L_tensor)
+        colorized_image = colorize_image(net_G1, L_tensor)
         colorized_filename = f"colorized_{filename}"
         result_path = os.path.join(app.config['RESULT_FOLDER'], colorized_filename)
         Image.fromarray((colorized_image * 255).astype(np.uint8)).save(result_path)
@@ -420,44 +476,10 @@ def colorize_endpoint():
     except Exception as e:
         return jsonify({'error': f"An error occurred: {str(e)}"}), 500
 
-
-# Flask routes
-# @app.route('/home', methods=['GET', 'POST'])
-# def index():
-#     """
-#     Homepage with upload functionality and displays the colorized image.
-#     """
-#     if request.method == 'GET' and 'colorized_image' not in session:
-#         session.pop('colorized_image', None)  # Only clear when there's no processed image
-#
-#     colorized_filename = session.get('colorized_image', None)  # Use the correct session key
-#
-#     if request.method == 'POST':
-#         # Check if the file is in the request
-#         if 'file' not in request.files:
-#             flash("No file uploaded!")
-#             return redirect(request.url)
-#
-#         file = request.files['file']
-#         if file.filename == '':
-#             flash("No file selected!")
-#             return redirect(request.url)
-#
-#         if file:
-#             # Save the uploaded file
-#             filepath = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
-#             file.save(filepath)
-#
-#             # Redirect to process the uploaded image
-#             return redirect(url_for('process_image', filename=file.filename))
-#
-#     return render_template('Home.html', colorized_image=colorized_filename)
-
 @app.route('/home', methods=['GET', 'POST'])
 def index():
     colorized_filename = session.get('colorized_image', None)
     return render_template('Home.html', colorized_image=colorized_filename)
-
 
 @app.route('/upload', methods=['POST'])
 def handle_upload():
@@ -490,24 +512,23 @@ def handle_upload():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-
 def allowed_file(filename):
     return '.' in filename and \
         filename.rsplit('.', 1)[1].lower() in {'png', 'jpg', 'jpeg', 'webp'}
 
-
 @app.route('/process/<filename>')
 def process_image(filename):
     conversion_type = request.args.get('type', 'colorize')
+    model = request.args.get('model', '1')  # Default to Model 1 if not specified
 
     try:
         input_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         if not os.path.exists(input_path):
             return jsonify({'error': 'File not found'}), 404
 
-        # Generate unique output filename
+        # Generate unique output filename including model number
         base_name = os.path.splitext(filename)[0]
-        result_filename = f"{conversion_type}_{base_name}.png"
+        result_filename = f"{conversion_type}_model{model}_{base_name}.png"  # e.g., colorize_model1_image1.png
         result_path = os.path.join(app.config['RESULT_FOLDER'], result_filename)
 
         if conversion_type == 'grayscale':
@@ -515,14 +536,16 @@ def process_image(filename):
             img = Image.open(input_path).convert('L')
             img.save(result_path)
         elif conversion_type == 'colorize':
-            # Colorize using GAN model
-            L_tensor, _ = preprocess_image(input_path)
-            with torch.no_grad():
-                ab_pred = net_G.net_G(L_tensor)
-
-            # Post-process and save
-            colorized_image = postprocess_colorization(L_tensor, ab_pred)
-            Image.fromarray(colorized_image).save(result_path)
+            # Select the model and corresponding processing functions
+            if model == '1':
+                selected_model = net_G1
+                L_tensor, _ = preprocess_image_model1(input_path)
+                colorized_image = colorize_image_model1(selected_model, L_tensor)
+            else:  # model == '2'
+                selected_model = net_G2
+                L_tensor, _ = preprocess_image_model2(input_path)
+                colorized_image = colorize_image_model2(selected_model, L_tensor)
+            Image.fromarray((colorized_image * 255).astype(np.uint8)).save(result_path)
         else:
             return jsonify({'error': 'Invalid conversion type'}), 400
 
@@ -534,18 +557,6 @@ def process_image(filename):
     except Exception as e:
         return jsonify({'error': f'Processing failed: {str(e)}'}), 500
 
-
-def postprocess_colorization(L_tensor, ab_pred):
-    """Convert model output to displayable RGB image"""
-    L = L_tensor.cpu().squeeze().numpy()
-    L = (L + 1) * 50  # Denormalize L channel
-    ab = ab_pred.cpu().squeeze().numpy().transpose(1, 2, 0) * 110  # Denormalize ab
-
-    lab = np.concatenate([L[..., np.newaxis], ab], axis=2)
-    rgb = lab2rgb(lab) * 255
-    return rgb.astype(np.uint8)
-
-
 @app.route('/download/<filename>')
 def download_file(filename):
     return send_from_directory(
@@ -553,13 +564,13 @@ def download_file(filename):
         filename,
         as_attachment=True
     )
+
 @app.route('/uploads/<filename>')
 def uploaded_file(filename):
     """
     Serves uploaded files for display.
     """
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
-
 
 @app.route('/static/results/<filename>')
 def result_file(filename):
@@ -573,6 +584,7 @@ def logout():
     session.clear()  # Clear all session data
     flash('You have been logged out.', 'info')  # Optional: Display a logout message
     return redirect('/')  # Redirect to the login page
+
 
 if __name__ == '__main__':
     app.run(debug=True)

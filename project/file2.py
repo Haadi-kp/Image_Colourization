@@ -8,39 +8,7 @@ from torch import nn, optim
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 SIZE = 256
-# class ColorizationDataset(Dataset):
-#     def __init__(self, paths, split='train'):
-#         if split == 'train':
-#             self.transforms = transforms.Compose([
-#                 transforms.Resize((SIZE, SIZE),  Image.BICUBIC),
-#                 transforms.RandomHorizontalFlip(), # A little data augmentation!
-#             ])
-#         elif split == 'val':
-#             self.transforms = transforms.Resize((SIZE, SIZE),  Image.BICUBIC)
-#
-#         self.split = split
-#         self.size = SIZE
-#         self.paths = paths
-#
-#     def __getitem__(self, idx):
-#         img = Image.open(self.paths[idx]).convert("RGB")
-#         img = self.transforms(img)
-#         img = np.array(img)
-#         img_lab = rgb2lab(img).astype("float32") # Converting RGB to L*a*b
-#         img_lab = transforms.ToTensor()(img_lab)
-#         L = img_lab[[0], ...] / 50. - 1. # Between -1 and 1
-#         ab = img_lab[[1, 2], ...] / 110. # Between -1 and 1
-#
-#         return {'L': L, 'ab': ab}
-#
-#     def __len__(self):
-#         return len(self.paths)
 
-# def make_dataloaders(batch_size=16, n_workers=4, pin_memory=True, **kwargs): # A handy function to make our dataloaders
-#     dataset = ColorizationDataset(**kwargs)
-#     dataloader = DataLoader(dataset, batch_size=batch_size, num_workers=n_workers,
-#                             pin_memory=pin_memory)
-#     return dataloader
 
 class UnetBlock(nn.Module):
     def __init__(self, nf, ni, submodule=None, input_c=None, dropout=False,
@@ -166,16 +134,23 @@ def init_model(model, device):
     model = init_weights(model)
     return model
 
+
 class MainModel(nn.Module):
-    def __init__(self, net_G=None, lr_G=2e-4, lr_D=2e-4,
+    def __init__(self, net_G=None, pretrained_G_path=None, lr_G=2e-4, lr_D=2e-4,
                  beta1=0.5, beta2=0.999, lambda_L1=100.):
         super().__init__()
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.lambda_L1 = lambda_L1
 
+         # Use the DeOldify-based generator and load pretrained weights if available.
         if net_G is None:
-            self.net_G = init_model(Unet(input_c=1, output_c=2, n_down=8, num_filters=64), self.device)
+            self.net_G = DeOldifyGenerator(input_nc=1, output_nc=2, n_filters=64, n_blocks=6)
+            if pretrained_G_path is not None:
+                torch.serialization.add_safe_globals([slice])
+                self.net_G.load_state_dict(torch.load(pretrained_G_path, map_location=self.device, weights_only=False), strict=False)
+                print("Loaded pretrained DeOldify generator weights.")
+            self.net_G = init_model(self.net_G, self.device)
         else:
             self.net_G = net_G.to(self.device)
         self.net_D = init_model(PatchDiscriminator(input_c=3, n_down=3, num_filters=64), self.device)
@@ -183,8 +158,6 @@ class MainModel(nn.Module):
         self.L1criterion = nn.L1Loss()
         self.opt_G = optim.Adam(self.net_G.parameters(), lr=lr_G, betas=(beta1, beta2))
         self.opt_D = optim.Adam(self.net_D.parameters(), lr=lr_D, betas=(beta1, beta2))
-
-        self.fake_color = None
 
     def set_requires_grad(self, model, requires_grad=True):
         for p in model.parameters():
@@ -194,10 +167,8 @@ class MainModel(nn.Module):
         self.L = data['L'].to(self.device)
         self.ab = data['ab'].to(self.device)
 
-    def forward(self, L):
-        # Compute fake colorization (ab channels) using the Generator
-        self.fake_color = self.net_G(L)
-        return self.fake_color
+    def forward(self):
+        self.fake_color = self.net_G(self.L)
 
     def backward_D(self):
         fake_image = torch.cat([self.L, self.fake_color], dim=1)
@@ -218,7 +189,7 @@ class MainModel(nn.Module):
         self.loss_G.backward()
 
     def optimize(self):
-        self.forward(self.L)
+        self.forward()
         self.net_D.train()
         self.set_requires_grad(self.net_D, True)
         self.opt_D.zero_grad()
@@ -231,3 +202,54 @@ class MainModel(nn.Module):
         self.backward_G()
         self.opt_G.step()
 
+
+
+
+# -----------------------------
+# New DeOldify-based generator implementation (to be used with pretrained weights)
+# -----------------------------
+class ResidualBlock(nn.Module):
+    def __init__(self, dim):
+        super(ResidualBlock, self).__init__()
+        self.block = nn.Sequential(
+            nn.Conv2d(dim, dim, kernel_size=3, padding=1, bias=False),
+            nn.InstanceNorm2d(dim),
+            nn.ReLU(True),
+            nn.Conv2d(dim, dim, kernel_size=3, padding=1, bias=False),
+            nn.InstanceNorm2d(dim)
+        )
+
+    def forward(self, x):
+        return x + self.block(x)
+
+class DeOldifyGenerator(nn.Module):
+    def __init__(self, input_nc=1, output_nc=2, n_filters=64, n_blocks=6):
+        super(DeOldifyGenerator, self).__init__()
+        model = []
+        # Initial convolution block
+        model += [nn.Conv2d(input_nc, n_filters, kernel_size=7, padding=3, bias=False),
+                  nn.InstanceNorm2d(n_filters),
+                  nn.ReLU(True)]
+        curr_dim = n_filters
+        # Downsampling layers
+        for i in range(2):
+            model += [nn.Conv2d(curr_dim, curr_dim*2, kernel_size=3, stride=2, padding=1, bias=False),
+                      nn.InstanceNorm2d(curr_dim*2),
+                      nn.ReLU(True)]
+            curr_dim *= 2
+        # Residual blocks
+        for i in range(n_blocks):
+            model += [ResidualBlock(curr_dim)]
+        # Upsampling layers
+        for i in range(2):
+            model += [nn.ConvTranspose2d(curr_dim, curr_dim//2, kernel_size=3, stride=2, padding=1, output_padding=1, bias=False),
+                      nn.InstanceNorm2d(curr_dim//2),
+                      nn.ReLU(True)]
+            curr_dim = curr_dim // 2
+        # Final convolution block
+        model += [nn.Conv2d(curr_dim, output_nc, kernel_size=7, padding=3),
+                  nn.Tanh()]
+        self.model = nn.Sequential(*model)
+
+    def forward(self, x):
+        return self.model(x)
