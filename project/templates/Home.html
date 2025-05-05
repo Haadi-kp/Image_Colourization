@@ -96,7 +96,7 @@
             <div class="step">
                 <div class="step-number">2</div>
                 <h3>Choose Conversion</h3>
-                <p>Select between grayscale conversion or colorization based on your needs.</p>
+                <p>Select between grayscale conversion or colorization based on your needs, choose the model for colorization</p>
             </div>
 
             <div class="step">
@@ -193,9 +193,8 @@
         </div>
     </footer>
 <script>
-
 document.addEventListener('DOMContentLoaded', () => {
-sessionStorage.removeItem('currentFile');
+    sessionStorage.removeItem('currentFile');
     const uploadArea = document.querySelector('.upload-area');
     const fileInput = document.createElement('input');
     fileInput.type = 'file';
@@ -252,73 +251,74 @@ sessionStorage.removeItem('currentFile');
     });
 
     // Define modal-related variables
-        let selectedModel = '1'; // Default to Model 1
-        const modelModal = document.getElementById('modelModal');
-        const closeModal = document.querySelector('.close');
-        const processButton = document.getElementById('processButton');
+    let selectedModel = '1'; // Default to Model 1
+    const modelModal = document.getElementById('modelModal');
+    const closeModal = document.querySelector('.close');
+    const processButton = document.getElementById('processButton');
 
-        // Handle action buttons
-        document.querySelectorAll('.action-buttons button').forEach(button => {
-            button.addEventListener('click', async () => {
-                const filename = sessionStorage.getItem('currentFile');
-                if (!filename) {
-                    showError('Please upload an image first!');
-                    return;
-                }
-
-                if (button.classList.contains('btn-primary')) {
-                    // Grayscale conversion
-                    try {
-                        const url = `/process/${filename}?type=grayscale`;
-                        const response = await fetch(url);
-                        const result = await response.json();
-                        if (result.error) throw new Error(result.error);
-                        displayResult(result.result_url, result.download_url);
-                    } catch (error) {
-                        showError(error.message);
-                    }
-                } else if (button.classList.contains('btn-secondary')) {
-                    // Show model selection modal for colorization
-                    modelModal.style.display = 'block';
-                }
-            });
-        });
-
-        // Handle model selection in modal
-        document.querySelectorAll('#modelModal .btn-group .btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                document.querySelectorAll('#modelModal .btn-group .btn').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-                selectedModel = btn.getAttribute('data-model');
-            });
-        });
-
-        // Handle process button in modal
-        processButton.addEventListener('click', async () => {
-            modelModal.style.display = 'none';
+    // Handle action buttons
+    document.querySelectorAll('.action-buttons button').forEach(button => {
+        button.addEventListener('click', async () => {
             const filename = sessionStorage.getItem('currentFile');
-            try {
-                const url = `/process/${filename}?type=colorize&model=${selectedModel}`;
-                const response = await fetch(url);
-                const result = await response.json();
-                if (result.error) throw new Error(result.error);
-                displayResult(result.result_url, result.download_url);
-            } catch (error) {
-                showError(error.message);
+            if (!filename) {
+                showError('Please upload an image first!');
+                return;
+            }
+
+            if (button.classList.contains('btn-primary')) {
+                // Grayscale conversion
+                try {
+                    const url = `/process/${filename}?type=grayscale`;
+                    const response = await fetch(url);
+                    const result = await response.json();
+                    if (result.error) throw new Error(result.error);
+                    displayResult(result.result_url, result.download_url);
+                } catch (error) {
+                    showError(error.message);
+                }
+            } else if (button.classList.contains('btn-secondary')) {
+                // Show model selection modal for colorization
+                modelModal.style.display = 'block';
             }
         });
+    });
 
-        // Close modal when close button is clicked
-        closeModal.addEventListener('click', () => {
+    // Handle model selection in modal
+    document.querySelectorAll('#modelModal .btn-group .btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('#modelModal .btn-group .btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            selectedModel = btn.getAttribute('data-model');
+        });
+    });
+
+       // Handle process button in modal
+    processButton.addEventListener('click', async () => {
+        modelModal.style.display = 'none';
+        const filename = sessionStorage.getItem('currentFile');
+        try {
+            // Add a timestamp to prevent caching
+            const url = `/process/${filename}?type=colorize&model=${selectedModel}&t=${Date.now()}`;
+            const response = await fetch(url);
+            const result = await response.json();
+            if (result.error) throw new Error(result.error);
+            displayResult(result.result_url, result.download_url);
+        } catch (error) {
+            showError(error.message);
+        }
+    });
+
+    // Close modal when close button is clicked
+    closeModal.addEventListener('click', () => {
+        modelModal.style.display = 'none';
+    });
+
+    // Close modal when clicking outside
+    window.addEventListener('click', (event) => {
+        if (event.target === modelModal) {
             modelModal.style.display = 'none';
-        });
-
-        // Close modal when clicking outside
-        window.addEventListener('click', (event) => {
-            if (event.target === modelModal) {
-                modelModal.style.display = 'none';
-            }
-        });
+        }
+    });
 
     function clearResults() {
         const existingResult = document.querySelector('.result-container');
@@ -329,95 +329,93 @@ sessionStorage.removeItem('currentFile');
     }
 
     function displayResult(resultUrl, downloadUrl) {
-    clearResults(); // Explicitly clear previous results
-    const resultHTML = `
-        <div class="result-container">
-            <h3>Conversion Result</h3>
-            <div class="result-preview">
-                <img src="${resultUrl}" alt="Conversion result">
+        clearResults(); // Explicitly clear previous results
+        const resultHTML = `
+            <div class="result-container">
+                <h3>Conversion Result</h3>
+                <div class="result-preview">
+                    <img src="${resultUrl}" alt="Conversion result">
+                </div>
+                <div class="result-actions">
+                    <button class="btn btn-primary" id="download-btn">Download Result</button>
+                </div>
             </div>
-            <div class="result-actions">
-                <button class="btn btn-primary" id="download-btn">Download Result</button>
-            </div>
-        </div>
-    `;
-    document.querySelector('#upload').insertAdjacentHTML('beforeend', resultHTML);
+        `;
+        document.querySelector('#upload').insertAdjacentHTML('beforeend', resultHTML);
 
-    // Add event listener to the download button
-    document.getElementById('download-btn').addEventListener('click', async () => {
-        try {
-            // Fetch the file from the download URL
-            const response = await fetch(downloadUrl);
-            if (!response.ok) {
-                throw new Error('Failed to download image');
+        // Add event listener to the download button
+        document.getElementById('download-btn').addEventListener('click', async () => {
+            try {
+                // Fetch the file from the download URL
+                const response = await fetch(downloadUrl);
+                if (!response.ok) {
+                    throw new Error('Failed to download image');
+                }
+
+                // Convert the response to a blob
+                const blob = await response.blob();
+
+                // Create a temporary URL for the blob
+                const url = window.URL.createObjectURL(blob);
+
+                // Create a hidden anchor element to trigger the download
+                const a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = url;
+                a.download = 'processed_image'; // Set the filename (customize as needed)
+                document.body.appendChild(a);
+                a.click();
+
+                // Clean up
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+
+                // Show success message
+                showSuccess('Image downloaded successfully!');
+            } catch (error) {
+                // Show error message if something goes wrong
+                showError('Failed to download image: ' + error.message);
             }
+        });
+    }
 
-            // Convert the response to a blob
-            const blob = await response.blob();
+    function showError(message) {
+        const alertContainer = document.querySelector('.alert-container');
+        if (!alertContainer) return; // Fallback if container is missing
 
-            // Create a temporary URL for the blob
-            const url = window.URL.createObjectURL(blob);
+        alertContainer.innerHTML = '';
 
-            // Create a hidden anchor element to trigger the download
-            const a = document.createElement('a');
-            a.style.display = 'none';
-            a.href = url;
-            a.download = 'processed_image'; // Set the filename (customize as needed)
-            document.body.appendChild(a);
-            a.click();
+        const errorHTML = `
+            <div class="alert alert-error">
+                <span class="alert-message">${message}</span>
+                <button class="alert-close">×</button>
+            </div>
+        `;
+        alertContainer.insertAdjacentHTML('beforeend', errorHTML);
 
-            // Clean up
-            window.URL.revokeObjectURL(url);
-            document.body.removeChild(a);
+        const newAlert = alertContainer.lastElementChild;
+        setTimeout(() => {
+            if (newAlert.parentNode) newAlert.remove();
+        }, 2500);
+    }
 
-            // Show success message
-            showSuccess('Image downloaded successfully!');
-        } catch (error) {
-            // Show error message if something goes wrong
-            showError('Failed to download image: ' + error.message);
-        }
-    });
-}
+    function showSuccess(message) {
+        const alertContainer = document.querySelector('.alert-container');
+        if (!alertContainer) return;
 
+        const successHTML = `
+            <div class="alert alert-success">
+                <span class="alert-message">${message}</span>
+                <button class="alert-close">×</button>
+            </div>
+        `;
+        alertContainer.insertAdjacentHTML('beforeend', successHTML);
 
-function showError(message) {
-    const alertContainer = document.querySelector('.alert-container');
-    if (!alertContainer) return; // Fallback if container is missing
-
-    alertContainer.innerHTML = '';
-
-    const errorHTML = `
-        <div class="alert alert-error">
-            <span class="alert-message">${message}</span>
-            <button class="alert-close">×</button>
-        </div>
-    `;
-    alertContainer.insertAdjacentHTML('beforeend', errorHTML);
-
-    const newAlert = alertContainer.lastElementChild;
-    setTimeout(() => {
-        if (newAlert.parentNode) newAlert.remove();
-    }, 2500);
-}
-
-function showSuccess(message) {
-    const alertContainer = document.querySelector('.alert-container');
-    if (!alertContainer) return;
-
-    const successHTML = `
-        <div class="alert alert-success">
-            <span class="alert-message">${message}</span>
-            <button class="alert-close">×</button>
-        </div>
-    `;
-    alertContainer.insertAdjacentHTML('beforeend', successHTML);
-
-    const newAlert = alertContainer.lastElementChild;
-    setTimeout(() => {
-        if (newAlert.parentNode) newAlert.remove();
-    }, 2500);
-}
-
+        const newAlert = alertContainer.lastElementChild;
+        setTimeout(() => {
+            if (newAlert.parentNode) newAlert.remove();
+        }, 2500);
+    }
 });
 </script>
 
